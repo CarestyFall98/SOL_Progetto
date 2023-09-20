@@ -63,7 +63,7 @@ void sig_handler(int signum){
             print = 1;
             char *stampa = "stampa\0";
             LOCK(&mux_sock);
-            write(sockfd, stampa, NAME_MAX_LEN);
+            write(sockfd, stampa, sizeof(long));
             UNLOCK(&mux_sock);
             break;  
     }
@@ -184,17 +184,7 @@ long read_file(char *filename){
     return result;
 }
 
-//Creazione Threadpool
 
-void threadpool(){
-    pool = malloc(sizeof(pthread_t));
-
-    for (int i = 0; i < nthreads; i++){
-        active_threads++;
-        pthread_create(&pool[i], NULL, worker, NULL);
-    }
-    
-}
 
 //Funzione worker
 
@@ -241,6 +231,19 @@ void *worker(){
     return NULL;
 }
 
+//Creazione Threadpool
+
+void threadpool(){
+    pool = malloc(sizeof(pthread_t));
+    for (int i = 0; i < nthreads; i++){
+        active_threads++;
+        if(pthread_create(&pool[i], NULL, worker, NULL) != 0){
+            fprintf(stderr, "Errore nells creazione dei thread per la Threadpool.\n");
+            return;
+        }
+    }
+}
+
 int main(int argc, char *argv[]){
 
     int d_flag = 0;
@@ -279,7 +282,7 @@ int main(int argc, char *argv[]){
             dir = optarg;
             break;
         case 't': // Tempo di attesa in millisecondi
-            isNumber(optarg, (long *)&time);
+            isNumber(optarg, (long *)&time_delay);
             time_delay = strtol(optarg, &endptr, 10);
             if (*endptr != '\0' && *endptr != '\n'){
                 fprintf(stderr, "Invalid number for '-t'\n");
@@ -298,7 +301,8 @@ int main(int argc, char *argv[]){
     printf("Directory flag (-d): %s\n", d_flag ? "true" : "false");
     printf("Sleep time (-t): %d milliseconds\n", time_delay);
 
-     struct sigaction sa;
+/********************************************GESTIONE SEGNALI********************************************/
+    struct sigaction sa;
     sa.sa_handler = sig_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
@@ -318,28 +322,10 @@ int main(int argc, char *argv[]){
         while (is_running && nanosleep(&delay, &delay) == -1 && errno == EINTR);
     }
 
-    struct dirent *entry = NULL;
-    char tmp[NAME_MAX_LEN] = "\0";
-    char d_path[NAME_MAX_LEN] = "\0";
-    DIR *d = NULL;
+    
 
-    if (d_flag == 1){
-        from_directory(dir, tmp, d_path, entry, d);
-    }
-
-    int i = 0;
-
-    while (i < argc && end){
-        if (end)
-            break;
-        if (strstr(argv[i], ".dat")){
-            sleep(time_delay);
-            insert_name(argv[i]);
-        }
-        exit(EXIT_FAILURE);
-    }
-
-    //Implemento la socket
+/********************************************IMPLEMENTO LA SOCKET********************************************/
+   
     struct sockaddr_un serv_addr;
     SYSCALL_EXIT("socket", notused, socket(AF_UNIX, SOCK_STREAM, 0), "socket", "");
 
@@ -347,6 +333,7 @@ int main(int argc, char *argv[]){
     serv_addr.sun_family = AF_UNIX;
     strncpy(serv_addr.sun_path, SOCKNAME, strlen(SOCKNAME) + 10);
 
+/********************************************CREO IL COLLECTOR********************************************/
     int pid_c; //PID collector
 
     pid_c = fork();
@@ -355,16 +342,62 @@ int main(int argc, char *argv[]){
         collector();
     }
     else {
-        
-    }
+       sleep(1);
+       SYSCALL_EXIT("connect", notused, connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "connect", "");
+        printf("Effettuata correttamente la connessione tra Master-Worker e collector\n");
 
-   
-   // for (i = optind; i < argc; i++){
-   //     l = read_file(argv[i]);
-   // }
-   // printf("Il risultato e': %ld\n", l);
-    // CircArray fileArray;
-    // init_array(&fileArray, qlen);
+       threadpool();
+/********************************************INSERISCO I FILENAME IN CODA********************************************/
+
+        int i = 0;
+
+        while (i < argc && end){
+            if (end)
+                break;
+            if (strstr(argv[i], ".dat")){
+                sleep(time_delay);
+                insert_name(argv[i]);
+            }
+            exit(EXIT_FAILURE);
+        }
+
+        struct dirent *entry = NULL;
+        char tmp[NAME_MAX_LEN] = "\0";
+        char d_path[NAME_MAX_LEN] = "\0";
+        DIR *d = NULL;
+
+        if (d_flag == 1){
+            from_directory(dir, tmp, d_path, entry, d);
+        }
+
+        //STRINGA DI TERMINAZIONE
+        char *termination_string ="End of tasks\0";
+
+        for (i = 0; i < qlen; i++){
+            insert_name(termination_string);
+            SIGNAL(&c_remove);
+        }
+        for (i = 0; i < nthreads; i++) {
+            if(pthread_join(pool[i], NULL) != 0){
+                fprintf(stderr, "Error during thread join.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        printf("\n******** Active Threads: %d ********\n", active_threads);
+
+        SYSCALL_EXIT("writen", notused, writen(sockfd, finished, 10), "writen", "");
+
+        close(sockfd); //Chiudo la connessione
+
+        for  (i = 0; i < qlen; i++){
+            file_names *delete = Names;
+            Names = Names->next;
+            free(delete->filename);
+            free(delete);
+        }
+        free(Names);
+        free(pool);
+    }
 
     /*
     pthread_t* worker_threads = (pthread_t *)malloc(nthreads * sizeof(pthread_t));
