@@ -1,47 +1,7 @@
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <errno.h>
-#include <time.h>
-#include <pthread.h>
-#include <getopt.h>
-#include <dirent.h>
-#include <signal.h>
+#include "MasterWorker.h"
 
-#include "utils/includes/util.h"
-#include "utils/includes/conn.h" //Ho riciclato gli header files delle soluzioni degli esercizi di lab
 
-#define NAME_MAX_LEN 255
-
-volatile int is_running = 1;
-
-typedef struct FileNames{
-    char *filename;
-    struct FileNames *next;
-} file_names;
-
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t c_insert = PTHREAD_COND_INITIALIZER;
-pthread_cond_t c_remove = PTHREAD_COND_INITIALIZER;
-
-pthread_mutex_t mux_sock = PTHREAD_MUTEX_INITIALIZER;
-
-static int nthreads = 4, qlen = 8, time_delay = 0; // Variabili globali con i valori di default date dal testo del progetto
-static int active_threads = 0;
-static file_names *Names = NULL; // Puntatore alla testa della lista dei file names
-static pthread_t *pool;
-
-static int num_files = 0; // Numero dei files presenti nella lista inizialmente
-static char *dir;         // Nome della directory
-
-static char *finished = "continue";
-
-static int notused;
-static int sockfd;
-
-volatile sig_atomic_t end = 1;   // Variabile che mi dice se devo terminare, dopo aver terminato le richieste
-volatile sig_atomic_t print = 1; // Variabile che dice se devo stampare i file temporanei
+/******************************************** SIGNAL HANDLER ********************************************/
 
 void sig_handler(int signum){
     switch (signum){
@@ -69,7 +29,7 @@ void sig_handler(int signum){
     }
 }
 
-// Aggiungo un nome di un file all'array
+/******************************************** INSERIMENTO DEI FILENAMES IN CODA ********************************************/
 
 void insert_name(char *filename){
     LOCK(&mutex);
@@ -105,7 +65,8 @@ void insert_name(char *filename){
     UNLOCK(&mutex);
 }
 
-// Tolgo un nome di un file dall'array
+/******************************************** RIMOZIONE FILENAMES DALLA CODA********************************************/
+
 
 void remove_name(void){
 
@@ -117,7 +78,8 @@ void remove_name(void){
     SIGNAL(&c_insert);
 }
 
-// Inserisco il nome dalla directory
+/******************************************** INSERIMENTO FILENAMES IN CODA DALLA DIRECTORY ********************************************/
+
 
 void from_directory(char *directory, char *tmp, char *d_path, struct dirent *entry, DIR *dir){
 
@@ -149,7 +111,8 @@ void from_directory(char *directory, char *tmp, char *d_path, struct dirent *ent
     }
 }
 
-// Funzione di lettura e calcolo dei long dei file
+/******************************************** FUNZIONE DI LETTURA E CALCOLO DEI LONG NEL FILE ********************************************/
+
 long read_file(char *filename){
 
     FILE *fd; // Descrittore del file
@@ -186,7 +149,8 @@ long read_file(char *filename){
 
 
 
-//Funzione worker
+/******************************************** FUNZIONE WORKER ********************************************/
+
 
 void *worker(){
     while (1){
@@ -231,7 +195,8 @@ void *worker(){
     return NULL;
 }
 
-//Creazione Threadpool
+/******************************************** CREAZIONE DEL THREADPOOL ********************************************/
+
 
 void threadpool(){
     pool = malloc(sizeof(pthread_t));
@@ -258,8 +223,9 @@ int main(int argc, char *argv[]){
     int opt;
     char *endptr;
 
+/******************************************** PARSING DEGLI ARGOOMENTI CON getopt() ********************************************/
+
     while ((opt = getopt_long(argc, argv, "n:q:d:t:", long_options, NULL)) != -1){
-        // Faccio il il parsing degli argomenti passati da linea di comando con la funzione getopt()
         switch (opt){
         case 'n': // Numero dei threads
             isNumber(optarg, (long *)&nthreads);
@@ -301,7 +267,7 @@ int main(int argc, char *argv[]){
     printf("Directory flag (-d): %s\n", d_flag ? "true" : "false");
     printf("Sleep time (-t): %d milliseconds\n", time_delay);
 
-/********************************************GESTIONE SEGNALI********************************************/
+/******************************************** GESTIONE SEGNALI ********************************************/
     struct sigaction sa;
     sa.sa_handler = sig_handler;
     sigemptyset(&sa.sa_mask);
@@ -313,7 +279,8 @@ int main(int argc, char *argv[]){
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGUSR1, sig_handler);
 
-    // Sleep for the specified time
+/******************************************** DORMO PER IL TEMPO SPECIFICATO DALL'OPZIONE "-t" ********************************************/
+
     if (time_delay >= 0){
         printf("\nSleeping for %d milliseconds...\n\n", time_delay);
         struct timespec delay;
@@ -324,7 +291,7 @@ int main(int argc, char *argv[]){
 
     
 
-/********************************************IMPLEMENTO LA SOCKET********************************************/
+/******************************************** IMPLEMENTO LA SOCKET ********************************************/
    
     struct sockaddr_un serv_addr;
     SYSCALL_EXIT("socket", notused, socket(AF_UNIX, SOCK_STREAM, 0), "socket", "");
@@ -333,7 +300,7 @@ int main(int argc, char *argv[]){
     serv_addr.sun_family = AF_UNIX;
     strncpy(serv_addr.sun_path, SOCKNAME, strlen(SOCKNAME) + 10);
 
-/********************************************CREO IL COLLECTOR********************************************/
+/******************************************** CREO IL COLLECTOR ********************************************/
     int pid_c; //PID collector
 
     pid_c = fork();
@@ -347,7 +314,8 @@ int main(int argc, char *argv[]){
         printf("Effettuata correttamente la connessione tra Master-Worker e collector\n");
 
        threadpool();
-/********************************************INSERISCO I FILENAME IN CODA********************************************/
+
+/******************************************** INSERISCO I FILENAME IN CODA ********************************************/
 
         int i = 0;
 
@@ -370,8 +338,8 @@ int main(int argc, char *argv[]){
             from_directory(dir, tmp, d_path, entry, d);
         }
 
-        //STRINGA DI TERMINAZIONE
-        char *termination_string ="End of tasks\0";
+       
+        char *termination_string ="End of tasks\0";  // STRINGA DI TERMINAZIONE
 
         for (i = 0; i < qlen; i++){
             insert_name(termination_string);
@@ -387,6 +355,8 @@ int main(int argc, char *argv[]){
 
         SYSCALL_EXIT("writen", notused, writen(sockfd, finished, 10), "writen", "");
 
+/******************************************** CHUDO LA CONNESSIONE ********************************************/
+
         close(sockfd); //Chiudo la connessione
 
         for  (i = 0; i < qlen; i++){
@@ -398,67 +368,5 @@ int main(int argc, char *argv[]){
         free(Names);
         free(pool);
     }
-
-    /*
-    pthread_t* worker_threads = (pthread_t *)malloc(nthreads * sizeof(pthread_t));
-    //int* worker_ids = (int*)malloc(nthreads * sizeof(int));
-
-    if (pthread_mutex_init(&fileArray.mutex, NULL) != 0) {
-        perror("Inizializzazione della mutex fallita");
-        exit(EXIT_FAILURE);
-    }
-
-    if (pthread_cond_init(&fileArray.empty, NULL) != 0 || pthread_cond_init(&fileArray.full, NULL) != 0) {
-        perror("Inizializzazione della condition variable fallita");
-        exit(EXIT_FAILURE);
-    }
-    */
-    /**
-     * fileArray.size = qlen;
-     * fileArray.current_files = 0;
-     * fileArray.index = 0;
-     * fileArray.terminated = 0;
-     */
-
-    // Aggiungo i nomi dei file all'array
-    /* for (int i = optind; i < argc; i++) {
-         insert(&fileArray, argv[i]);
-     }
-
-     for (int i = 0; i < nthreads; i++) {
-         if (pthread_create(&worker_threads[i], NULL, worker, &fileArray) != 0) {
-             fprintf(stderr, "Errore nella creazione dei thread worker.");
-             exit(EXIT_FAILURE);
-         }
-     }
-
-     //finito = 1; //Se ho finito lo spazio nell'array
-
-     //pthread_cond_broadcast(&fileArray.empty);
-
-     //Attendo il completamento dei thread worker
-
-    for (int i = 0; i < nthreads; i++) {
-         char empty_filename[NAME_MAX_LENGTH] = "";
-         insert(&fileArray, empty_filename); //Segnala ai worker di terminare
-     }
-
-
-     for (int i = 0; i < nthreads; i++) {
-         pthread_join(worker_threads[i], NULL);
-     }
-
-
-     free(worker_threads);
-     for (int i = 0; i < qlen; i++) {
-         free(fileArray.filenames[i]);
-     }
-     free(fileArray.filenames);
-
-      //Termina il programma
-     pthread_mutex_destroy(&fileArray.mutex);
-     pthread_cond_destroy(&fileArray.full);
-     pthread_cond_destroy(&fileArray.empty);
-    */
     return 0;
 }
